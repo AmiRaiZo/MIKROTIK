@@ -25,13 +25,9 @@ SCRIPT_URL="https://raw.githubusercontent.com/AmiRaiZo/MIKROTIK/main/install.sh"
 SHORTCUT_BIN="/usr/local/bin/mik-help"
 SHORTCUT_CACHE="/usr/local/share/mik-help.sh"
 
-# Default ports (press Enter to use them):
-#   L2TP/IPsec : 500/udp 4500/udp 1701/udp
-#   WireGuard  : 51820/udp 48546/udp
-#   SSTP       : 443/tcp
-#   Winbox     : 36666 (forwards to Winbox inside MikroTik)
-#   SSH        : host 2222 -> container 22
-DEFAULT_PORTS="500/udp,4500/udp,1701/udp,51820/udp,48546/udp,443/tcp,36666:8291/tcp,2222:22/tcp"
+# The Docker installer publishes exactly one host port: Winbox TCP 36666 -> RouterOS TCP 8291.
+# No other host ports are published.
+WINBOX_PORT_MAPPING="36666:8291/tcp"
 
 SUDO=""
 [ "$EUID" -ne 0 ] && SUDO="sudo"
@@ -131,12 +127,9 @@ build_port_args() {
 
 ask_ports() {
     echo ""
-    echo "Enter ports separated by comma. Format:  PORT[/tcp|/udp]  or  HOST:CONTAINER[/proto]  or  START-END[/proto]"
-    echo "If no protocol is given, TCP is used."
-    echo "Default: $DEFAULT_PORTS"
-    read -p "Ports (press Enter for default): " user_ports
-    user_ports="${user_ports:-$DEFAULT_PORTS}"
-    build_port_args "$user_ports"
+    echo "Only Winbox is exposed: server TCP 36666 -> RouterOS TCP 8291."
+    echo "No other host ports will be published."
+    build_port_args "$WINBOX_PORT_MAPPING"
 }
 
 run_container() {
@@ -155,7 +148,7 @@ install_mikrotik() {
         return 0
     fi
     load_image || { echo "Failed to load image."; exit 1; }
-    ask_ports || exit 1
+    build_port_args "$WINBOX_PORT_MAPPING" || exit 1
     run_container
 }
 
@@ -179,8 +172,8 @@ recreate_mikrotik() {
         docker port "$CONTAINER" 2>/dev/null || echo "(none)"
     fi
 
-    ask_ports || exit 1
-    read -p "Type YES to delete the old container and create a new one: " confirm
+    build_port_args "$WINBOX_PORT_MAPPING" || exit 1
+    read -p "Type YES to delete the old container and create a new one with only Winbox TCP 36666: " confirm
     [ "$confirm" == "YES" ] || { echo "Cancelled."; exit 0; }
     docker rm -f "$CONTAINER" 2>/dev/null
     run_container
@@ -323,7 +316,7 @@ menu() {
     clear
     echo "-------MikroTik Installer-------"
     echo "Select an option:"
-    echo "1) Install MikroTik CHR (ERASES the whole disk!)"
+    echo "1) CHR install (disabled: exposes RouterOS directly; use Docker for port 36666 only)"
     echo "----------------------------"
     echo "2) Install MikroTik via Docker"
     echo "3) Uninstall MikroTik via Docker"
@@ -342,7 +335,7 @@ menu
 read -p "Enter your choice: " choice
 
 case $choice in
-    1) install_chr_image ;;
+    1) echo "CHR mode is disabled. Use option 2 to expose only TCP port 36666." ;;
     2) install_mikrotik ;;
     3) uninstall_mikrotik ;;
     4) recreate_mikrotik ;;
