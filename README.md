@@ -66,6 +66,7 @@ Select an option:
 3) Uninstall MikroTik via Docker
 4) Recreate Docker container (Winbox port only)
 5) Uninstall All
+6) Manage public ports (forward to MikroTik)
 ----------------------------
 0) Exit
 ```
@@ -77,6 +78,7 @@ Select an option:
 | **3** | Removes the MikroTik container and its Docker image. |
 | **4** | Deletes the container and recreates it with only TCP port `36666` forwarded to Winbox. |
 | **5** | Removes everything: container, image, downloaded files and the `mik-help` command. Docker itself is kept. |
+| **6** | Manage public TCP/UDP ports in Docker mode: open, close and list forwarded ports without recreating the container. |
 
 ---
 
@@ -88,7 +90,15 @@ The installer publishes exactly one host port:
 |---|---:|---:|
 | Winbox | TCP `36666` | TCP `8291` |
 
-This single-port rule applies to the Docker installation only. CHR uses the host network directly, so its reachable services depend on RouterOS firewall rules and the hosting provider's network firewall.
+This table shows the initial Docker port mapping. To expose additional ports in Docker mode, use **6) Manage public ports** from the `mik-help` menu.
+
+### Manage public ports
+
+Run `mik-help` and select option **6**. Enter the public server port, the destination port inside MikroTik, and TCP or UDP. Leave the destination port empty to use the same number on both sides.
+
+Example: forward public UDP port `51821` to UDP port `51821` inside MikroTik. Connections to `SERVER_IP:51821` will then reach RouterOS. The same menu lets you close a forwarded port or list the managed ports.
+
+Forwarding uses host NAT/firewall rules and does not remove or recreate the Docker container, so RouterOS settings are preserved. Rules are restored after server reboot and Docker container starts. The port must also be allowed by the hosting provider's firewall, and the corresponding service/input rule must be enabled in RouterOS. This feature is for Docker mode, not CHR.
 
 Option **4** recreates the container with the same single-port mapping. Existing RouterOS settings are lost, so export your configuration first with `/export file=backup`.
 
@@ -118,7 +128,7 @@ docker attach livekadeh_com_mikrotik7_7
 
 ## Warnings
 
-- With Docker, only Winbox TCP port `36666` is published.
+- The initial Docker mapping publishes only Winbox TCP port `36666`; option 6 can forward additional ports separately.
 - CHR installation erases the server disk and replaces its operating system. Back up first and ensure provider console/VNC access.
 - CHR does not use Docker port mapping; secure its services with RouterOS firewall rules and the provider firewall.
 - Never leave the default password on a server that is reachable from the internet.
