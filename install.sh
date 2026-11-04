@@ -2,14 +2,8 @@
 # MikroTik (Docker) installer - modified version
 # Based on Ptechgithub/MIKROTIK install.sh
 #
-# Changes:
-#  - Accepts a list of ports (comma separated), with TCP/UDP per port
-#  - Supports host:container mapping (e.g. 2222:22/tcp)
-#  - Supports ranges (e.g. 1000-1100/udp)
-#  - Only the ports in your list are opened (nothing else)
-#  - Option to recreate the container with a new port list
-#  - CHR (dd) install option kept, with a YES confirmation and safer disk detection
-#  - Removed the resolv.conf overwrite
+# Docker publishes only Winbox TCP 36666 -> RouterOS TCP 8291.
+# CHR mode is disabled because it uses the host network interface directly.
 
 CONTAINER="livekadeh_com_mikrotik7_7"
 IMAGE_ARCHIVE="Docker-image-Mikrotik-7.7-L6.7z"
@@ -88,7 +82,7 @@ load_image() {
     docker load --input "$IMAGE_FILE" || return 1
 }
 
-# Converts "500/udp,51820/udp,443,2222:22/tcp,1000-1100/udp" into PORT_ARGS array
+# Converts the fixed Winbox host:container mapping into Docker arguments.
 build_port_args() {
     PORT_ARGS=()
     local input="${1// /}"
@@ -125,13 +119,6 @@ build_port_args() {
     fi
 }
 
-ask_ports() {
-    echo ""
-    echo "Only Winbox is exposed: server TCP 36666 -> RouterOS TCP 8291."
-    echo "No other host ports will be published."
-    build_port_args "$WINBOX_PORT_MAPPING"
-}
-
 run_container() {
     echo "Starting container with: ${PORT_ARGS[*]}"
     docker run --restart unless-stopped --cap-add=NET_ADMIN --device=/dev/net/tun -d \
@@ -144,7 +131,7 @@ run_container() {
 install_mikrotik() {
     check_and_install_docker
     if docker ps -a --format "{{.Names}}" | grep -qx "$CONTAINER"; then
-        echo "MikroTik container already exists. Use option 4 to recreate it with new ports."
+        echo "MikroTik container already exists. Use option 4 to recreate it with the Winbox-only port mapping."
         return 0
     fi
     load_image || { echo "Failed to load image."; exit 1; }
@@ -320,7 +307,7 @@ menu() {
     echo "----------------------------"
     echo "2) Install MikroTik via Docker"
     echo "3) Uninstall MikroTik via Docker"
-    echo "4) Recreate Docker container with new ports"
+    echo "4) Recreate Docker container (Winbox port only)"
     echo "5) Uninstall All"
     echo "----------------------------"
     echo "0) Exit"
