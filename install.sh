@@ -167,6 +167,7 @@ recreate_mikrotik() {
 }
 
 uninstall_mikrotik() {
+    remove_port_forward_support
     if docker ps -a --format "{{.Names}}" | grep -qx "$CONTAINER"; then
         docker stop "$CONTAINER"
         docker rm "$CONTAINER"
@@ -182,528 +183,57 @@ uninstall_mikrotik() {
     fi
 }
 
-# Public TCP/UDP forwarding to the MikroTik Docker container.
-# These rules do not recreate the container or reset RouterOS settings.
+# Manage public ports without recreating the MikroTik Docker container.
 PORT_HELPER="/usr/local/sbin/mik-port-forward"
+PORT_HELPER_URL="https://raw.githubusercontent.com/AmiRaiZo/MIKROTIK/main/port-forward.sh"
 PORT_FORWARD_UNIT="/etc/systemd/system/mikrotik-port-forward.service"
 
 install_port_forward_support() {
-    if ! command -v iptables >/dev/null 2>&1; then
-        echo "iptables is not installed. Install Docker networking dependencies first."
-        return 1
-    fi
-
-    $SUDO tee "$PORT_HELPER" >/dev/null <<'PORT_HELPER_EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-
-CONTAINER="livekadeh_com_mikrotik7_7"
-CONFIG="/etc/mikrotik-port-forward/ports.tsv"
-NAT_CHAIN="MIK_HELP_NAT"
-FILTER_CHAIN="MIK_HELP_FILTER"
-
-die() { echo "ERROR: $*" >&2; exit 1; }
-
-normalize_port() {
-    local value="$1"
-    [[ "$value" =~ ^[0-9]{1,5}$ ]] || return 1
-    value=$((10#$value))
-    (( value >= 1 && value <= 65535 )) || return 1
-    printf '%s' "$value"
-}
-
-normalize_protocol() {
-    local value
-    value=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
-    [[ "$value" == "tcp" || "$value" == "udp" ]] || return 1
-    printf '%s' "$value"
-}
-
-remove_filter_jump() {
-    local parent="$1"
-    while iptables -C "$parent" -j "$FILTER_CHAIN" >/dev/null 2>&1; do
-        iptables -D "$parent" -j "$FILTER_CHAIN" || break
-    done
-}
-
-remove_nat_jump() {
-    while iptables -t nat -C PREROUTING -j "$NAT_CHAIN" >/dev/null 2>&1; do
-        iptables -t nat -D PREROUTING -j "$NAT_CHAIN" || break
-    done
-}
-
-apply_rules() {
-    command -v docker >/dev/null 2>&1 || die "Docker command not found."
-    command -v iptables >/dev/null 2>&1 || die "iptables command not found."
-    mkdir -p "$(dirname "$CONFIG")"
-    touch "$CONFIG"
-
-    iptables -t nat -N "$NAT_CHAIN" 2>/dev/null || true
-    iptables -N "$FILTER_CHAIN" 2>/dev/null || true
-
-    if [[ ! -s "$CONFIG" ]]; then
-        remove_nat_jump
-        remove_filter_jump "DOCKER-USER"
-        remove_filter_jump "FORWARD"
-        iptables -t nat -F "$NAT_CHAIN" 2>/dev/null || true
-        iptables -F "$FILTER_CHAIN" 2>/dev/null || true
-        echo "No managed public ports are open."
-        return 0
-    fi
-
-    local container_ip=""
-    local attempt
-    for attempt in $(seq 1 30); do
-        if [[ "$(docker inspect -f '{{.State.Running}}' "$CONTAINER" 2>/dev/null || true)" == "true" ]]; then
-            container_ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{if .IPAddress}}{{.IPAddress}}{{"\n"}}{{end}}{{end}}' "$CONTAINER" 2>/dev/null | head -n1)
-        fi
-        [[ -n "$container_ip" ]] && break
-        sleep 1
-    done
-    [[ -n "$container_ip" ]] || die "MikroTik Docker container is not running or has no bridge IP."
-
-    iptables -t nat -F "$NAT_CHAIN"
-    iptables -F "$FILTER_CHAIN"
-    remove_nat_jump
-    remove_filter_jump "DOCKER-USER"
-    remove_filter_jump "FORWARD"
-
-    while IFS=
-# Prints the version (e.g. 7.20.1) and only accepts it if the CHR image exists.
-get_latest_chr_version() {
-    local url v
-    for url in \
-        "https://upgrade.mikrotik.com/routeros/NEWESTa7.stable" \
-        "https://upgrade.mikrotik.com/routeros/NEWEST7.stable"; do
-        v=$(curl -fsSL --max-time 15 "$url" 2>/dev/null | tr -d '\r' | head -n1 | grep -oE '^[0-9]+\.[0-9]+(\.[0-9]+)?')
-        if [ -n "$v" ] && wget -q --spider "https://download.mikrotik.com/routeros/${v}/chr-${v}.img.zip"; then
-            echo "$v"
-            return 0
-        fi
-    done
-    return 1
-}
-
-# Replaces the WHOLE OS/disk with MikroTik CHR (destructive!)
-install_chr_image() {
-    check_dependencies
-
-    echo "Checking latest stable RouterOS version..."
-    CHR_VERSION=$(get_latest_chr_version) || {
-        CHR_VERSION="$CHR_FALLBACK_VERSION"
-        echo "Could not detect the latest version, using fallback: $CHR_VERSION"
-    }
-    echo "CHR version: $CHR_VERSION"
-
-    local root_src disk
-    root_src=$(findmnt -no SOURCE /)
-    disk=$(lsblk -no PKNAME "$root_src" 2>/dev/null | head -n1)
-    if [ -n "$disk" ]; then
-        disk="/dev/$disk"
-    else
-        disk="$root_src"
-    fi
-
-    echo ""
-    echo "WARNING: this will ERASE the entire disk ($disk) and replace the"
-    echo "operating system with MikroTik CHR ${CHR_VERSION}. All data will be lost."
-    echo "Make sure you have VNC/console access in your hosting panel and a backup."
-    read -p "Type YES (capital letters) to continue: " confirm
-    [ "$confirm" == "YES" ] || { echo "Cancelled."; return 0; }
-
-    $SUDO wget "https://download.mikrotik.com/routeros/${CHR_VERSION}/chr-${CHR_VERSION}.img.zip" -O chr.img.zip \
-        || { echo "Download failed."; return 1; }
-    unzip -o chr.img.zip -d chr.img || { echo "Unzip failed."; return 1; }
-
-    echo 1 | $SUDO tee /proc/sys/kernel/sysrq > /dev/null
-    echo u | $SUDO tee /proc/sysrq-trigger > /dev/null
-    $SUDO dd if="chr.img/chr-${CHR_VERSION}.img" bs=1024 of="$disk"
-    sync
-    echo s | $SUDO tee /proc/sysrq-trigger > /dev/null
-    echo "sync disk please wait..."
-    sleep 5
-    echo "Installed, rebooting..."
-    echo b | $SUDO tee /proc/sysrq-trigger > /dev/null
-}
-
-# Installs the "mik-help" command (downloads the latest installer each time,
-# falls back to the cached copy if GitHub is not reachable)
-install_shortcut() {
-    if [ "$EUID" -ne 0 ] && ! command -v sudo &> /dev/null; then
-        return 0
-    fi
-    $SUDO mkdir -p "$(dirname "$SHORTCUT_CACHE")" 2>/dev/null
-    $SUDO tee "$SHORTCUT_BIN" > /dev/null <<'WRAP'
-#!/bin/bash
-SCRIPT_URL="__SCRIPT_URL__"
-CACHE="__CACHE__"
-if [ "$EUID" -ne 0 ]; then
-    exec sudo "$0" "$@"
-fi
-if curl -fsSL --max-time 10 "$SCRIPT_URL" -o "$CACHE.tmp" 2>/dev/null && [ -s "$CACHE.tmp" ]; then
-    mv "$CACHE.tmp" "$CACHE"
-fi
-if [ ! -f "$CACHE" ]; then
-    echo "Could not download the installer. Check your internet connection."
-    exit 1
-fi
-exec bash "$CACHE" "$@"
-WRAP
-    $SUDO sed -i "s|__SCRIPT_URL__|$SCRIPT_URL|; s|__CACHE__|$SHORTCUT_CACHE|" "$SHORTCUT_BIN"
-    $SUDO chmod +x "$SHORTCUT_BIN"
-}
-
-remove_shortcut() {
-    $SUDO rm -f "$SHORTCUT_BIN" "$SHORTCUT_CACHE"
-    echo "The mik-help command has been removed."
-}
-
-# Removes EVERYTHING this script installed: container, image, downloaded
-# files and the mik-help command. (Docker itself is not removed.)
-uninstall_all() {
-    echo ""
-    echo "=============================================================="
-    echo " WARNING: this will completely remove:"
-    echo " - the MikroTik container and ALL its settings"
-    echo " - the MikroTik Docker image"
-    echo " - downloaded installer files"
-    echo " - the mik-help command"
-    echo " Docker itself will NOT be removed."
-    echo "=============================================================="
-    read -p "Type YES to remove everything: " confirm
-    [ "$confirm" == "YES" ] || { echo "Cancelled."; return 0; }
-
-    if command -v docker &> /dev/null; then
-        uninstall_mikrotik
-    else
-        echo "Docker is not installed, skipping container removal."
-    fi
-
-    rm -f "$IMAGE_ARCHIVE" "$IMAGE_FILE" chr.img.zip get-docker.sh
-    rm -rf chr.img
-    remove_shortcut
-    echo "Everything has been removed."
-}
-
-menu() {
-    clear
-    echo "-------MikroTik Installer-------"
-    echo "Select an option:"
-    echo "1) Install MikroTik CHR (destructive: replaces the server OS/disk)"
-    echo "----------------------------"
-    echo "2) Install MikroTik via Docker"
-    echo "3) Uninstall MikroTik via Docker"
-    echo "4) Recreate Docker container (Winbox port only)"
-    echo "5) Uninstall All"
-    echo "6) Manage public ports (forward to MikroTik)"
-    echo "----------------------------"
-    echo "0) Exit"
-    if [ -x "$SHORTCUT_BIN" ]; then
-        echo ""
-        echo "Tip: type 'mik-help' anywhere in SSH to open this menu."
-    fi
-}
-
-install_shortcut
-menu
-read -p "Enter your choice: " choice
-
-case $choice in
-    1) install_chr_image ;;
-    2) install_mikrotik ;;
-    3) uninstall_mikrotik ;;
-    4) recreate_mikrotik ;;
-    5) uninstall_all ;;
-    6) manage_public_ports ;;
-    0) exit ;;
-    *) echo "Invalid choice. Please select a valid option." ;;
-esac
-\t' read -r public_port target_port protocol; do
-        [[ -z "$public_port" ]] && continue
-        public_port=$(normalize_port "$public_port") || die "Invalid public port in $CONFIG."
-        target_port=$(normalize_port "$target_port") || die "Invalid target port in $CONFIG."
-        protocol=$(normalize_protocol "$protocol") || die "Invalid protocol in $CONFIG."
-
-        iptables -t nat -A "$NAT_CHAIN" -p "$protocol" --dport "$public_port" \
-            -j DNAT --to-destination "$container_ip:$target_port"
-        iptables -A "$FILTER_CHAIN" -d "$container_ip" -p "$protocol" --dport "$target_port" \
-            -m conntrack --ctstate NEW,ESTABLISHED,RELATED -j ACCEPT
-    done < "$CONFIG"
-
-    iptables -t nat -I PREROUTING 1 -j "$NAT_CHAIN"
-    if iptables -nL DOCKER-USER >/dev/null 2>&1; then
-        iptables -I DOCKER-USER 1 -j "$FILTER_CHAIN"
-    else
-        iptables -I FORWARD 1 -j "$FILTER_CHAIN"
-    fi
-
-    echo "Public port forwarding rules applied to MikroTik container IP $container_ip."
-}
-
-port_in_use() {
-    local port="$1"
-    if docker port "$CONTAINER" 2>/dev/null | awk -v p="$port" '$NF ~ (":" p "$") { found=1 } END { exit !found }'; then
-        return 0
-    fi
-    if command -v ss >/dev/null 2>&1; then
-        if ss -H -lntup 2>/dev/null | awk -v p="$port" '$5 ~ (":" p "$") { found=1 } END { exit !found }'; then
-            return 0
-        fi
-    fi
-    return 1
-}
-
-open_port() {
-    local public_port target_port protocol tmp
-    public_port=$(normalize_port "$1") || die "Public port must be a number from 1 to 65535."
-    target_port=$(normalize_port "$2") || die "MikroTik target port must be a number from 1 to 65535."
-    protocol=$(normalize_protocol "$3") || die "Protocol must be TCP or UDP."
-
-    mkdir -p "$(dirname "$CONFIG")"
-    touch "$CONFIG"
-
-    if awk -F '\t' -v p="$public_port" -v pr="$protocol" '$1 == p && $3 == pr { found=1 } END { exit !found }' "$CONFIG"; then
-        die "This public port/protocol is already managed. Use List or Close."
-    fi
-    if port_in_use "$public_port"; then
-        die "Public port $public_port is already published by Docker or used by a host service."
-    fi
-
-    printf '%s\t%s\t%s\n' "$public_port" "$target_port" "$protocol" >> "$CONFIG"
-    if ! apply_rules; then
-        tmp=$(mktemp)
-        awk -F '\t' -v p="$public_port" -v pr="$protocol" '!( $1 == p && $3 == pr )' "$CONFIG" > "$tmp"
-        mv "$tmp" "$CONFIG"
-        apply_rules || true
-        return 1
-    fi
-    echo "Opened: SERVER_PUBLIC_IP:$public_port/$protocol -> MikroTik:$target_port"
-}
-
-close_port() {
-    local public_port protocol tmp
-    public_port=$(normalize_port "$1") || die "Public port must be a number from 1 to 65535."
-    protocol=$(normalize_protocol "$2") || die "Protocol must be TCP or UDP."
-    [[ -f "$CONFIG" ]] || die "No managed public ports are configured."
-
-    tmp=$(mktemp)
-    if ! awk -F '\t' -v p="$public_port" -v pr="$protocol" '
-        $1 == p && $3 == pr { found=1; next }
-        { print }
-        END { if (!found) exit 1 }
-    ' "$CONFIG" > "$tmp"; then
-        rm -f "$tmp"
-        die "Port $public_port/$protocol was not found in the managed list."
-    fi
-    mv "$tmp" "$CONFIG"
-    apply_rules
-    echo "Closed: SERVER_PUBLIC_IP:$public_port/$protocol"
-}
-
-list_ports() {
-    if [[ ! -s "$CONFIG" ]]; then
-        echo "No managed public ports are open."
-        return 0
-    fi
-    printf '%-14s %-14s %-8s\n' "PUBLIC PORT" "MIKROTIK PORT" "PROTOCOL"
-    printf '%-14s %-14s %-8s\n' "-----------" "-------------" "--------"
-    while IFS=
-# Prints the version (e.g. 7.20.1) and only accepts it if the CHR image exists.
-get_latest_chr_version() {
-    local url v
-    for url in \
-        "https://upgrade.mikrotik.com/routeros/NEWESTa7.stable" \
-        "https://upgrade.mikrotik.com/routeros/NEWEST7.stable"; do
-        v=$(curl -fsSL --max-time 15 "$url" 2>/dev/null | tr -d '\r' | head -n1 | grep -oE '^[0-9]+\.[0-9]+(\.[0-9]+)?')
-        if [ -n "$v" ] && wget -q --spider "https://download.mikrotik.com/routeros/${v}/chr-${v}.img.zip"; then
-            echo "$v"
-            return 0
-        fi
-    done
-    return 1
-}
-
-# Replaces the WHOLE OS/disk with MikroTik CHR (destructive!)
-install_chr_image() {
-    check_dependencies
-
-    echo "Checking latest stable RouterOS version..."
-    CHR_VERSION=$(get_latest_chr_version) || {
-        CHR_VERSION="$CHR_FALLBACK_VERSION"
-        echo "Could not detect the latest version, using fallback: $CHR_VERSION"
-    }
-    echo "CHR version: $CHR_VERSION"
-
-    local root_src disk
-    root_src=$(findmnt -no SOURCE /)
-    disk=$(lsblk -no PKNAME "$root_src" 2>/dev/null | head -n1)
-    if [ -n "$disk" ]; then
-        disk="/dev/$disk"
-    else
-        disk="$root_src"
-    fi
-
-    echo ""
-    echo "WARNING: this will ERASE the entire disk ($disk) and replace the"
-    echo "operating system with MikroTik CHR ${CHR_VERSION}. All data will be lost."
-    echo "Make sure you have VNC/console access in your hosting panel and a backup."
-    read -p "Type YES (capital letters) to continue: " confirm
-    [ "$confirm" == "YES" ] || { echo "Cancelled."; return 0; }
-
-    $SUDO wget "https://download.mikrotik.com/routeros/${CHR_VERSION}/chr-${CHR_VERSION}.img.zip" -O chr.img.zip \
-        || { echo "Download failed."; return 1; }
-    unzip -o chr.img.zip -d chr.img || { echo "Unzip failed."; return 1; }
-
-    echo 1 | $SUDO tee /proc/sys/kernel/sysrq > /dev/null
-    echo u | $SUDO tee /proc/sysrq-trigger > /dev/null
-    $SUDO dd if="chr.img/chr-${CHR_VERSION}.img" bs=1024 of="$disk"
-    sync
-    echo s | $SUDO tee /proc/sysrq-trigger > /dev/null
-    echo "sync disk please wait..."
-    sleep 5
-    echo "Installed, rebooting..."
-    echo b | $SUDO tee /proc/sysrq-trigger > /dev/null
-}
-
-# Installs the "mik-help" command (downloads the latest installer each time,
-# falls back to the cached copy if GitHub is not reachable)
-install_shortcut() {
-    if [ "$EUID" -ne 0 ] && ! command -v sudo &> /dev/null; then
-        return 0
-    fi
-    $SUDO mkdir -p "$(dirname "$SHORTCUT_CACHE")" 2>/dev/null
-    $SUDO tee "$SHORTCUT_BIN" > /dev/null <<'WRAP'
-#!/bin/bash
-SCRIPT_URL="__SCRIPT_URL__"
-CACHE="__CACHE__"
-if [ "$EUID" -ne 0 ]; then
-    exec sudo "$0" "$@"
-fi
-if curl -fsSL --max-time 10 "$SCRIPT_URL" -o "$CACHE.tmp" 2>/dev/null && [ -s "$CACHE.tmp" ]; then
-    mv "$CACHE.tmp" "$CACHE"
-fi
-if [ ! -f "$CACHE" ]; then
-    echo "Could not download the installer. Check your internet connection."
-    exit 1
-fi
-exec bash "$CACHE" "$@"
-WRAP
-    $SUDO sed -i "s|__SCRIPT_URL__|$SCRIPT_URL|; s|__CACHE__|$SHORTCUT_CACHE|" "$SHORTCUT_BIN"
-    $SUDO chmod +x "$SHORTCUT_BIN"
-}
-
-remove_shortcut() {
-    $SUDO rm -f "$SHORTCUT_BIN" "$SHORTCUT_CACHE"
-    echo "The mik-help command has been removed."
-}
-
-# Removes EVERYTHING this script installed: container, image, downloaded
-# files and the mik-help command. (Docker itself is not removed.)
-uninstall_all() {
-    echo ""
-    echo "=============================================================="
-    echo " WARNING: this will completely remove:"
-    echo " - the MikroTik container and ALL its settings"
-    echo " - the MikroTik Docker image"
-    echo " - downloaded installer files"
-    echo " - the mik-help command"
-    echo " Docker itself will NOT be removed."
-    echo "=============================================================="
-    read -p "Type YES to remove everything: " confirm
-    [ "$confirm" == "YES" ] || { echo "Cancelled."; return 0; }
-
-    if command -v docker &> /dev/null; then
-        uninstall_mikrotik
-    else
-        echo "Docker is not installed, skipping container removal."
-    fi
-
-    rm -f "$IMAGE_ARCHIVE" "$IMAGE_FILE" chr.img.zip get-docker.sh
-    rm -rf chr.img
-    remove_shortcut
-    echo "Everything has been removed."
-}
-
-menu() {
-    clear
-    echo "-------MikroTik Installer-------"
-    echo "Select an option:"
-    echo "1) Install MikroTik CHR (destructive: replaces the server OS/disk)"
-    echo "----------------------------"
-    echo "2) Install MikroTik via Docker"
-    echo "3) Uninstall MikroTik via Docker"
-    echo "4) Recreate Docker container (Winbox port only)"
-    echo "5) Uninstall All"
-    echo "----------------------------"
-    echo "0) Exit"
-    if [ -x "$SHORTCUT_BIN" ]; then
-        echo ""
-        echo "Tip: type 'mik-help' anywhere in SSH to open this menu."
-    fi
-}
-
-install_shortcut
-menu
-read -p "Enter your choice: " choice
-
-case $choice in
-    1) install_chr_image ;;
-    2) install_mikrotik ;;
-    3) uninstall_mikrotik ;;
-    4) recreate_mikrotik ;;
-    5) uninstall_all ;;
-    0) exit ;;
-    *) echo "Invalid choice. Please select a valid option." ;;
-esac
-\t' read -r public_port target_port protocol; do
-        [[ -z "$public_port" ]] && continue
-        printf '%-14s %-14s %-8s\n' "$public_port" "$target_port" "$protocol"
-    done < "$CONFIG"
-}
-
-[[ "$EUID" -eq 0 ]] || die "Run this helper as root."
-case "$1" in
-    open)  [[ "$#" -eq 4 ]] || die "Usage: mik-port-forward open PUBLIC_PORT MIKROTIK_PORT tcp|udp"; open_port "$2" "$3" "$4" ;;
-    close) [[ "$#" -eq 3 ]] || die "Usage: mik-port-forward close PUBLIC_PORT tcp|udp"; close_port "$2" "$3" ;;
-    list)  list_ports ;;
-    apply) apply_rules ;;
-    *) die "Usage: mik-port-forward {open PUBLIC_PORT MIKROTIK_PORT tcp|udp|close PUBLIC_PORT tcp|udp|list|apply}" ;;
-esac
-PORT_HELPER_EOF
-    [ $? -eq 0 ] || return 1
+    $SUDO mkdir -p /usr/local/sbin || return 1
+    $SUDO curl -fsSL --max-time 20 "$PORT_HELPER_URL" -o "$PORT_HELPER" || return 1
     $SUDO chmod 0755 "$PORT_HELPER" || return 1
 
     $SUDO tee "$PORT_FORWARD_UNIT" >/dev/null <<'PORT_UNIT_EOF'
 [Unit]
-Description=Restore MikroTik public port forwarding rules
+Description=Monitor and restore MikroTik public port forwarding rules
 Requires=docker.service
 After=docker.service network-online.target
 Wants=network-online.target
 PartOf=docker.service
 
 [Service]
-Type=oneshot
-ExecStart=/usr/local/sbin/mik-port-forward apply
-RemainAfterExit=yes
+Type=simple
+ExecStart=/usr/local/sbin/mik-port-forward watch
+Restart=always
+RestartSec=3
 
 [Install]
 WantedBy=multi-user.target
 PORT_UNIT_EOF
     [ $? -eq 0 ] || return 1
-
     $SUDO systemctl daemon-reload || return 1
-    $SUDO systemctl enable mikrotik-port-forward.service >/dev/null || return 1
+    $SUDO systemctl enable --now mikrotik-port-forward.service >/dev/null || return 1
+}
+
+remove_port_forward_support() {
+    $SUDO systemctl disable --now mikrotik-port-forward.service >/dev/null 2>&1 || true
+    if [ -x "$PORT_HELPER" ]; then
+        $SUDO "$PORT_HELPER" clear >/dev/null 2>&1 || true
+    fi
+    $SUDO rm -f "$PORT_FORWARD_UNIT" "$PORT_HELPER"
+    $SUDO rm -rf /etc/mikrotik-port-forward
+    $SUDO systemctl daemon-reload >/dev/null 2>&1 || true
 }
 
 manage_public_ports() {
     if ! command -v docker >/dev/null 2>&1 || ! docker ps -a --format "{{.Names}}" | grep -qx "$CONTAINER"; then
-        echo "MikroTik Docker container was not found. This feature is for Docker mode."
+        echo "MikroTik Docker container was not found. This feature is available in Docker mode."
         read -r -p "Press Enter to return to menu..."
         return 0
     fi
 
     install_port_forward_support || {
-        echo "Could not install port-forward support."
+        echo "Could not install port-forward support. Check curl, systemd and Docker."
         read -r -p "Press Enter to return to menu..."
         return 1
     }
@@ -873,6 +403,7 @@ menu() {
     echo "3) Uninstall MikroTik via Docker"
     echo "4) Recreate Docker container (Winbox port only)"
     echo "5) Uninstall All"
+    echo "6) Manage public ports (forward to MikroTik)"
     echo "----------------------------"
     echo "0) Exit"
     if [ -x "$SHORTCUT_BIN" ]; then
@@ -891,6 +422,7 @@ case $choice in
     3) uninstall_mikrotik ;;
     4) recreate_mikrotik ;;
     5) uninstall_all ;;
+    6) manage_public_ports ;;
     0) exit ;;
     *) echo "Invalid choice. Please select a valid option." ;;
 esac
