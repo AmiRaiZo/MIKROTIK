@@ -55,7 +55,7 @@ apply_rules() {
     fi
 
     local container_ip=""
-    local attempt
+    local attempt public_port target_port protocol
     for attempt in $(seq 1 30); do
         if [[ "$(docker inspect -f '{{.State.Running}}' "$CONTAINER" 2>/dev/null || true)" == "true" ]]; then
             container_ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{if .IPAddress}}{{.IPAddress}}{{"\n"}}{{end}}{{end}}' "$CONTAINER" 2>/dev/null | head -n1)
@@ -156,6 +156,7 @@ close_port() {
 }
 
 list_ports() {
+    local public_port target_port protocol
     if [[ ! -s "$CONFIG" ]]; then
         echo "No managed public ports are open."
         return 0
