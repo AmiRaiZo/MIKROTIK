@@ -5,7 +5,7 @@
 # MikroTik Installer
 
 **Install MikroTik RouterOS on your Linux server with one command.**
-Docker installation with only Winbox TCP port `36666` exposed, and a `mik-help` shortcut to reopen the menu anytime.
+Docker installation publishes only Winbox TCP port `36666`; CHR installation is also available as a separate, destructive bare-metal option. A `mik-help` shortcut reopens the menu anytime.
 
 ![Ubuntu](https://img.shields.io/badge/Ubuntu-supported-E95420?style=flat-square&logo=ubuntu&logoColor=white)
 ![Debian](https://img.shields.io/badge/Debian-supported-A81D33?style=flat-square&logo=debian&logoColor=white)
@@ -60,7 +60,7 @@ mik-help
 ```
 -------MikroTik Installer-------
 Select an option:
-1) CHR install (disabled; use Docker to expose only port 36666)
+1) Install MikroTik CHR (destructive: replaces the server OS/disk)
 ----------------------------
 2) Install MikroTik via Docker
 3) Uninstall MikroTik via Docker
@@ -72,7 +72,7 @@ Select an option:
 
 | Option | What it does |
 |:---:|---|
-| **1** | Disabled. CHR uses the server network interface directly and cannot guarantee the single-port policy. |
+| **1** | Downloads and installs MikroTik CHR by replacing the server's entire disk/OS. This is destructive and uses the host network directly; port filtering must be configured in the provider firewall and/or RouterOS. |
 | **2** | Installs Docker (if missing) and runs MikroTik with only host TCP port `36666` forwarded to Winbox (`8291/tcp`). |
 | **3** | Removes the MikroTik container and its Docker image. |
 | **4** | Deletes the container and recreates it with only TCP port `36666` forwarded to Winbox. |
@@ -88,13 +88,15 @@ The installer publishes exactly one host port:
 |---|---:|---:|
 | Winbox | TCP `36666` | TCP `8291` |
 
-No other TCP or UDP ports are published by Docker. SSH, WebFig, API, L2TP/IPsec, WireGuard and SSTP are not exposed on the server.
+This single-port rule applies to the Docker installation only. CHR uses the host network directly, so its reachable services depend on RouterOS firewall rules and the hosting provider's network firewall.
 
 Option **4** recreates the container with the same single-port mapping. Existing RouterOS settings are lost, so export your configuration first with `/export file=backup`.
 
 ## After installation
 
-The host port `36666` forwards to Winbox TCP `8291` inside RouterOS. No other host ports are published.
+**Docker:** host TCP port `36666` forwards to Winbox TCP `8291` inside RouterOS. No other host ports are published by Docker.
+
+**CHR:** the installer replaces the server's entire disk with the CHR image. Make sure you have provider console/VNC access and a backup before proceeding. CHR uses the server network directly.
 
 **Leave the Docker console** without stopping the container: press `Ctrl+P` then `Ctrl+Q`.
 **Reconnect to it later:**
@@ -116,7 +118,9 @@ docker attach livekadeh_com_mikrotik7_7
 
 ## Warnings
 
-- With Docker, only Winbox TCP port `36666` is published. Restrict access to it with your provider firewall if needed.
+- With Docker, only Winbox TCP port `36666` is published.
+- CHR installation erases the server disk and replaces its operating system. Back up first and ensure provider console/VNC access.
+- CHR does not use Docker port mapping; secure its services with RouterOS firewall rules and the provider firewall.
 - Never leave the default password on a server that is reachable from the internet.
 
 ---
