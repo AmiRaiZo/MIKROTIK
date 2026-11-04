@@ -3,7 +3,7 @@
 # Based on Ptechgithub/MIKROTIK install.sh
 #
 # Docker publishes only Winbox TCP 36666 -> RouterOS TCP 8291.
-# CHR mode is disabled because it uses the host network interface directly.
+# CHR mode replaces the server disk and uses the host network directly.
 
 CONTAINER="livekadeh_com_mikrotik7_7"
 IMAGE_ARCHIVE="Docker-image-Mikrotik-7.7-L6.7z"
@@ -303,7 +303,7 @@ menu() {
     clear
     echo "-------MikroTik Installer-------"
     echo "Select an option:"
-    echo "1) CHR install (disabled: exposes RouterOS directly; use Docker for port 36666 only)"
+    echo "1) Install MikroTik CHR (destructive: replaces the server OS/disk)"
     echo "----------------------------"
     echo "2) Install MikroTik via Docker"
     echo "3) Uninstall MikroTik via Docker"
@@ -322,7 +322,7 @@ menu
 read -p "Enter your choice: " choice
 
 case $choice in
-    1) echo "CHR mode is disabled. Use option 2 to expose only TCP port 36666." ;;
+    1) install_chr_image ;;
     2) install_mikrotik ;;
     3) uninstall_mikrotik ;;
     4) recreate_mikrotik ;;
