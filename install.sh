@@ -15,7 +15,7 @@ IMAGE_URL="https://github.com/AmiRaiZo/MIKROTIK/releases/download/v1/${IMAGE_ARC
 CHR_FALLBACK_VERSION="7.15.2"
 
 # Shortcut: after the first run, typing "mik-help" in SSH opens this menu again
-SCRIPT_URL="https://raw.githubusercontent.com/AmiRaiZo/MIKROTIK/main/install.sh"
+SCRIPT_URL="https://raw.githubusercontent.com/AmiRaiZo/MIKROTIK/main/install.sh?v=public-port-forward-1"
 SHORTCUT_BIN="/usr/local/bin/mik-help"
 SHORTCUT_CACHE="/usr/local/share/mik-help.sh"
 
@@ -185,7 +185,7 @@ uninstall_mikrotik() {
 
 # Manage public ports without recreating the MikroTik Docker container.
 PORT_HELPER="/usr/local/sbin/mik-port-forward"
-PORT_HELPER_URL="https://raw.githubusercontent.com/AmiRaiZo/MIKROTIK/main/port-forward.sh"
+PORT_HELPER_URL="https://raw.githubusercontent.com/AmiRaiZo/MIKROTIK/5a228f944669aeeb2d3909f7ff2f8f876c897931/port-forward.sh"
 PORT_FORWARD_UNIT="/etc/systemd/system/mikrotik-port-forward.service"
 
 install_port_forward_support() {
