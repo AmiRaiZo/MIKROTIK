@@ -168,6 +168,16 @@ list_ports() {
     done < "$CONFIG"
 }
 
+clear_rules() {
+    command -v iptables >/dev/null 2>&1 || die "iptables command not found."
+    remove_nat_jump
+    remove_filter_jump "DOCKER-USER"
+    remove_filter_jump "FORWARD"
+    iptables -t nat -F "$NAT_CHAIN" 2>/dev/null || true
+    iptables -F "$FILTER_CHAIN" 2>/dev/null || true
+    echo "Managed port-forwarding rules cleared."
+}
+
 watch_rules() {
     while true; do
         apply_rules || true
@@ -186,6 +196,7 @@ case "$1" in
     close) [[ "$#" -eq 3 ]] || die "Usage: mik-port-forward close PUBLIC_PORT tcp|udp"; close_port "$2" "$3" ;;
     list)  list_ports ;;
     apply) apply_rules ;;
+    clear) clear_rules ;;
     watch) watch_rules ;;
     *) die "Usage: mik-port-forward {open|close|list|apply|watch}" ;;
 esac
