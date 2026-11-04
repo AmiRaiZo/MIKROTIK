@@ -96,8 +96,6 @@ Option **4** recreates the container with the same single-port mapping. Existing
 
 The host port `36666` forwards to Winbox TCP `8291` inside RouterOS. No other host ports are published.
 
-For ports with the same number on both sides (for example WireGuard `51820`), opening the port in Docker is not enough. The service must also listen on that port inside RouterOS.
-
 **Leave the Docker console** without stopping the container: press `Ctrl+P` then `Ctrl+Q`.
 **Reconnect to it later:**
 
@@ -113,15 +111,11 @@ docker attach livekadeh_com_mikrotik7_7
 - Root access or `sudo`
 - Internet access from the server
 - At least **1 GB RAM** and **1 CPU core** is enough for the Docker version
-- For CHR (option 1): **VNC/console access** from your hosting panel, in case the network needs manual setup after reboot
 
 ---
 
 ## Warnings
 
-- **Option 1 (CHR) erases the entire disk.** Everything on the server is lost. Back up first, and confirm your hosting provider allows custom images.
-- After CHR boots, the IP address comes from DHCP. If your provider does not use DHCP, set the IP from the VNC console.
-- The free CHR license limits every interface to **1 Mbps**. Buy a license for real use.
 - With Docker, only Winbox TCP port `36666` is published. Restrict access to it with your provider firewall if needed.
 - Never leave the default password on a server that is reachable from the internet.
 
@@ -131,11 +125,8 @@ docker attach livekadeh_com_mikrotik7_7
 
 | Problem | Fix |
 |---|---|
-| Container does not start | Another program is using one of your ports (for example 4433 or 2222). Free the port or choose another one. |
-| Cannot connect over SSH after install | Your new MikroTik SSH port is `2222` (server port), not `22`. |
-| L2TP/IPsec does not connect through Docker | Docker forwards only TCP and UDP ports, not the ESP protocol that IPsec uses. Make sure UDP 500, 4500 and 1701 are open in your provider's firewall. If it still fails, use another protocol such as WireGuard or SSTP. |
+| Container does not start | Another program is already using host TCP port `36666`. Free that port before installing. |
 | `curl` gives a 404 error | The repository must be **Public**, and the file name must be `install.sh` on the `main` branch. |
-| Ran out of RAM | Do not open thousands of ports. Every mapped port uses extra memory in Docker. |
 
 ---
 
