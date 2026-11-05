@@ -98,7 +98,7 @@ Run `mik-help` and select option **6**. Enter the public server port, the destin
 
 Example: forward public UDP port `51821` to UDP port `51821` inside MikroTik. Connections to `SERVER_IP:51821` will then reach RouterOS. The same menu lets you close a forwarded port or list the managed ports.
 
-Forwarding uses host NAT/firewall rules and does not remove or recreate the Docker container, so RouterOS settings are preserved. Rules are restored after server reboot and Docker container starts. The port must also be allowed by the hosting provider's firewall, and the corresponding service/input rule must be enabled in RouterOS. This feature is for Docker mode, not CHR.
+Forwarding uses host NAT/firewall rules and does not remove or recreate the Docker container, so RouterOS settings are preserved. Rules are restored after server reboot and Docker container starts. The port must also be allowed by the hosting provider's firewall, and the corresponding service/input rule must be enabled in RouterOS. This feature is for Docker mode, not CHR. DNAT rules are restricted to the host interface selected by the default IPv4 route. Packets entering from Docker bridges are excluded, so RouterOS connections to services on the host public IP are not redirected back into the same container.
 
 Option **4** recreates the container with the same single-port mapping. Existing RouterOS settings are lost, so export your configuration first with `/export file=backup`.
 
