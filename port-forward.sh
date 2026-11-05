@@ -4,7 +4,7 @@
 set -euo pipefail
 
 CONTAINER="livekadeh_com_mikrotik7_7"
-CONFIG="/etc/mikrotik-port-forward/ports.tsv"
+CONFIG="${MIK_PORT_FORWARD_CONFIG:-/etc/mikrotik-port-forward/ports.tsv}"
 NAT_CHAIN="MIK_HELP_NAT"
 FILTER_CHAIN="MIK_HELP_FILTER"
 
@@ -23,6 +23,26 @@ normalize_protocol() {
     value=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
     [[ "$value" == "tcp" || "$value" == "udp" ]] || return 1
     printf '%s' "$value"
+}
+
+# Resolve the host interface used to reach the public IPv4 internet.
+# Bind every DNAT rule to this ingress interface so Docker bridge traffic cannot
+# be redirected back into the same MikroTik container.
+detect_public_interface() {
+    local route_result interface
+    command -v ip >/dev/null 2>&1 || return 1
+
+    route_result=$(ip -4 route get 1.1.1.1 2>/dev/null | head -n1 || true)
+    interface=$(awk '{for (i = 1; i <= NF; i++) if ($i == "dev") {print $(i + 1); exit}}' <<< "$route_result")
+
+    if [[ -z "$interface" ]]; then
+        route_result=$(ip -4 route show default 2>/dev/null | head -n1 || true)
+        interface=$(awk '{for (i = 1; i <= NF; i++) if ($i == "dev") {print $(i + 1); exit}}' <<< "$route_result")
+    fi
+
+    [[ -n "$interface" ]] || return 1
+    ip link show dev "$interface" >/dev/null 2>&1 || return 1
+    printf '%s' "$interface"
 }
 
 remove_filter_jump() {
@@ -55,7 +75,7 @@ apply_rules() {
     fi
 
     local container_ip=""
-    local attempt public_port target_port protocol
+    local attempt public_port target_port protocol public_interface
     for attempt in $(seq 1 30); do
         if [[ "$(docker inspect -f '{{.State.Running}}' "$CONTAINER" 2>/dev/null || true)" == "true" ]]; then
             container_ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{if .IPAddress}}{{.IPAddress}}{{"\n"}}{{end}}{{end}}' "$CONTAINER" 2>/dev/null | head -n1)
@@ -65,6 +85,7 @@ apply_rules() {
     done
     [[ -n "$container_ip" ]] || die "MikroTik Docker container is not running or has no bridge IP."
 
+    public_interface=$(detect_public_interface) || die "Could not detect the public IPv4 interface. Existing forwarding rules were left unchanged."
     iptables -t nat -N "$NAT_CHAIN" 2>/dev/null || true
     iptables -N "$FILTER_CHAIN" 2>/dev/null || true
     iptables -t nat -F "$NAT_CHAIN"
@@ -79,7 +100,7 @@ apply_rules() {
         target_port=$(normalize_port "$target_port") || die "Invalid target port in $CONFIG."
         protocol=$(normalize_protocol "$protocol") || die "Invalid protocol in $CONFIG."
 
-        iptables -t nat -A "$NAT_CHAIN" -p "$protocol" --dport "$public_port" \
+        iptables -t nat -A "$NAT_CHAIN" -i "$public_interface" -p "$protocol" --dport "$public_port" \
             -j DNAT --to-destination "$container_ip:$target_port"
         iptables -A "$FILTER_CHAIN" -d "$container_ip" -p "$protocol" --dport "$target_port" \
             -m conntrack --ctstate NEW,ESTABLISHED,RELATED -j ACCEPT
@@ -92,7 +113,7 @@ apply_rules() {
         iptables -I FORWARD 1 -j "$FILTER_CHAIN"
     fi
 
-    echo "Forwarding rules applied to MikroTik container IP $container_ip."
+    echo "Forwarding rules applied to MikroTik container IP $container_ip via public interface $public_interface."
 }
 
 port_in_use() {
